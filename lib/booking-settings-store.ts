@@ -27,7 +27,7 @@ export async function getBookingSettings(): Promise<BookingSettings> {
 
   return {
     id: "global",
-    weeklyClosedDays: data.closed_days || [1],
+    weeklyClosedDays: [1],
     blockedByDate: data.blocked_by_date || {},
   };
 }
@@ -46,7 +46,7 @@ export async function setBlockedTimes(date: string, times: string[]) {
   const { error } = await supabase
     .from("booking_settings")
     .update({ blocked_by_date: nextBlockedByDate })
-    .eq("id", (await supabase.from("booking_settings").select("id").single()).data?.id);
+    .not("id", "is", null);
 
   if (error) throw error;
 
