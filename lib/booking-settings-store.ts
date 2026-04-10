@@ -1,57 +1,56 @@
-import { promises as fs } from "node:fs";
-import path from "node:path";
+import clientPromise from "./mongodb";
 
 export type BookingSettings = {
+  id: string; // "global"
   weeklyClosedDays: number[]; // 0=Sun ... 6=Sat
   blockedByDate: Record<string, string[]>; // YYYY-MM-DD -> ["HH:mm", ...]
 };
 
-const STORE_PATH = path.join(process.cwd(), "booking-settings.json");
+const DB_NAME = "appointment-system";
+const COLLECTION_NAME = "settings";
 
 const DEFAULT_SETTINGS: BookingSettings = {
+  id: "global",
   weeklyClosedDays: [1], // Monday
   blockedByDate: {},
 };
 
-async function readSettings(): Promise<BookingSettings> {
-  try {
-    const raw = await fs.readFile(STORE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<BookingSettings>;
-    return {
-      weeklyClosedDays: Array.isArray(parsed.weeklyClosedDays)
-        ? (parsed.weeklyClosedDays as number[])
-        : DEFAULT_SETTINGS.weeklyClosedDays,
-      blockedByDate:
-        parsed.blockedByDate && typeof parsed.blockedByDate === "object"
-          ? (parsed.blockedByDate as Record<string, string[]>)
-          : {},
-    };
-  } catch (err: unknown) {
-    const e = err as { code?: string };
-    if (e?.code === "ENOENT") return DEFAULT_SETTINGS;
-    throw err;
+export async function getBookingSettings(): Promise<BookingSettings> {
+  const client = await clientPromise;
+  const collection = client.db(DB_NAME).collection<BookingSettings>(COLLECTION_NAME);
+  const settings = await collection.findOne({ id: "global" });
+  
+  if (!settings) {
+    return DEFAULT_SETTINGS;
   }
-}
-
-async function writeSettingsAtomic(next: BookingSettings) {
-  const tmpPath = `${STORE_PATH}.tmp`;
-  await fs.writeFile(tmpPath, JSON.stringify(next, null, 2), "utf8");
-  await fs.rename(tmpPath, STORE_PATH);
-}
-
-export async function getBookingSettings() {
-  return readSettings();
+  
+  return {
+    ...DEFAULT_SETTINGS,
+    ...settings,
+    blockedByDate: settings.blockedByDate || {},
+    weeklyClosedDays: settings.weeklyClosedDays || [1]
+  };
 }
 
 export async function setBlockedTimes(date: string, times: string[]) {
-  const s = await readSettings();
+  const client = await clientPromise;
+  const collection = client.db(DB_NAME).collection<BookingSettings>(COLLECTION_NAME);
+  
+  const current = await getBookingSettings();
+  const nextBlockedByDate = { ...current.blockedByDate };
+  
   const uniq = Array.from(new Set(times)).sort();
   if (uniq.length === 0) {
-    delete s.blockedByDate[date];
+    delete nextBlockedByDate[date];
   } else {
-    s.blockedByDate[date] = uniq;
+    nextBlockedByDate[date] = uniq;
   }
-  await writeSettingsAtomic(s);
-  return s;
+  
+  await collection.updateOne(
+    { id: "global" },
+    { $set: { blockedByDate: nextBlockedByDate } },
+    { upsert: true }
+  );
+  
+  return { ...current, blockedByDate: nextBlockedByDate };
 }
-

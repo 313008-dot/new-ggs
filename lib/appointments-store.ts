@@ -1,11 +1,12 @@
-import { promises as fs } from "node:fs";
-import path from "node:path";
+import clientPromise from "./mongodb";
+import { ObjectId } from "mongodb";
 import crypto from "node:crypto";
 
 export type AppointmentStatus = "active" | "done";
 
 export type Appointment = {
-  id: string;
+  id: string; // Keep as string for frontend compatibility
+  _id?: ObjectId; // MongoDB internal ID
   name: string;
   phone: string;
   date: string; // YYYY-MM-DD
@@ -16,43 +17,21 @@ export type Appointment = {
   createdAt: string; // ISO
 };
 
-type StoreShape = {
-  appointments: Appointment[];
-};
-
-const STORE_PATH = path.join(process.cwd(), "appointments.json");
-
-function newId() {
-  return crypto.randomUUID();
-}
-
-async function readStore(): Promise<StoreShape> {
-  try {
-    const raw = await fs.readFile(STORE_PATH, "utf8");
-    const parsed = JSON.parse(raw) as Partial<StoreShape>;
-    const appointments = Array.isArray(parsed.appointments)
-      ? (parsed.appointments as Appointment[])
-      : [];
-    return { appointments };
-  } catch (err: unknown) {
-    const e = err as { code?: string };
-    if (e?.code === "ENOENT") return { appointments: [] };
-    throw err;
-  }
-}
-
-async function writeStoreAtomic(next: StoreShape) {
-  const tmpPath = `${STORE_PATH}.tmp`;
-  const payload = JSON.stringify(next, null, 2);
-  await fs.writeFile(tmpPath, payload, "utf8");
-  await fs.rename(tmpPath, STORE_PATH);
-}
+const DB_NAME = "appointment-system";
+const COLLECTION_NAME = "appointments";
 
 export async function listAppointments(): Promise<Appointment[]> {
-  const store = await readStore();
-  return store.appointments
-    .slice()
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const client = await clientPromise;
+  const collection = client.db(DB_NAME).collection<Appointment>(COLLECTION_NAME);
+  const items = await collection
+    .find({})
+    .sort({ createdAt: -1 })
+    .toArray();
+  
+  return items.map(item => ({
+    ...item,
+    id: item.id || item._id?.toString() || ""
+  }));
 }
 
 export async function createAppointment(input: {
@@ -63,9 +42,11 @@ export async function createAppointment(input: {
   people?: number;
   service?: string;
 }): Promise<Appointment> {
-  const store = await readStore();
+  const client = await clientPromise;
+  const collection = client.db(DB_NAME).collection<Appointment>(COLLECTION_NAME);
+  
   const appt: Appointment = {
-    id: newId(),
+    id: crypto.randomUUID(),
     name: input.name,
     phone: input.phone,
     date: input.date,
@@ -75,25 +56,24 @@ export async function createAppointment(input: {
     status: "active",
     createdAt: new Date().toISOString(),
   };
-  store.appointments.push(appt);
-  await writeStoreAtomic(store);
+
+  await collection.insertOne(appt);
   return appt;
 }
 
 export async function deleteAppointment(id: string) {
-  const store = await readStore();
-  const before = store.appointments.length;
-  store.appointments = store.appointments.filter((a) => a.id !== id);
-  const deleted = store.appointments.length !== before;
-  if (deleted) await writeStoreAtomic(store);
-  return deleted;
+  const client = await clientPromise;
+  const collection = client.db(DB_NAME).collection<Appointment>(COLLECTION_NAME);
+  const result = await collection.deleteOne({ id: id });
+  return result.deletedCount > 0;
 }
 
 export async function markAppointmentDone(id: string) {
-  const store = await readStore();
-  const appt = store.appointments.find((a) => a.id === id);
-  if (!appt) return false;
-  appt.status = "done";
-  await writeStoreAtomic(store);
-  return true;
+  const client = await clientPromise;
+  const collection = client.db(DB_NAME).collection<Appointment>(COLLECTION_NAME);
+  const result = await collection.updateOne(
+    { id: id },
+    { $set: { status: "done" } }
+  );
+  return result.modifiedCount > 0;
 }
