@@ -22,7 +22,7 @@ export default function Home() {
       "17:00",
       "17:30",
       "18:00",
-      "18:30",
+
 
       
 
